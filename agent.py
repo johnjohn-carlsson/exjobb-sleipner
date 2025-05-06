@@ -103,6 +103,20 @@ class SleipnerAgent:
         except Exception as e:
             print(f"Could not load stopwords for {lang_name}: {e}")
             return False
+        
+    def is_meaningful_filename(self, name: str) -> bool:
+        clean = name.lower().strip()
+
+        # Filter out names with less than three symbols
+        if len(clean) < 3:
+            return False
+
+        # Filter out shit like '123456789-123'
+        if all(c.isdigit() or c in "-_" for c in clean):
+            return False
+
+        return True
+
 
 
 
@@ -149,8 +163,16 @@ class SleipnerAgent:
                     filename_dir_cleaned = filename.split("\\")[-1]
                     filename_final_cleaned = filename_dir_cleaned.rsplit(".", 1)[0]
 
-                    language = detect(filename_final_cleaned)
-                    found_languages.append(language)
+                    if not self.is_meaningful_filename(filename_final_cleaned):
+                        continue  # skip junk
+
+                    try:
+                        language = detect(filename_final_cleaned)
+                        found_languages.append(language)
+                    except Exception:
+                        continue
+
+                    
 
                     # print(f"Filename: {filename_final_cleaned}. Language: {language}.")
 
@@ -165,6 +187,8 @@ class SleipnerAgent:
                 for language in all_languages_present:
                     occurences = found_languages.count(language)
                     counted_languages[language] = occurences
+                
+                # print(counted_languages)
 
                 most_common_language = max(counted_languages, key=counted_languages.get)
                 top_sample_language.append(most_common_language)
@@ -206,7 +230,7 @@ class Lantern:
         user_home = os.path.expanduser("~")
         root_locations = [
             os.path.join(user_home, "Documents"),
-            # os.path.join(user_home, "Desktop"),
+            os.path.join(user_home, "Desktop"),
             os.path.join(user_home, "Downloads")
         ]
 
