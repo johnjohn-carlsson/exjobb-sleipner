@@ -154,6 +154,21 @@ class SleipnerAgent:
         except ImportError as e:
             print(f"Failed to import PyPDF2: {e}")
             
+        # INSTALL DEFUSEDXML
+        try:
+            defused_path = os.path.join(packages_path, 'defusedxml')
+            if not os.path.exists(defused_path):
+                print(f"defusedxml not found at expected path: {defused_path}")
+                return False
+
+            if packages_path not in sys.path:
+                sys.path.insert(0, packages_path)
+
+            import defusedxml
+            print("Successfully imported defusedxml.")
+        except ImportError as e:
+            print(f"Failed to import defusedxml: {e}")
+            return False
             
         ##########################
         ##  INSTALL ODF READER  ##
@@ -169,6 +184,7 @@ class SleipnerAgent:
                 sys.path.insert(0, packages_path)
 
             import odf
+
             self.odf = odf
             print(f"Successfully imported odf.")
 
@@ -363,7 +379,7 @@ class SleipnerAgent:
         try:
             doc = self.docx.Document(file_path)
 
-            print("--- NEW DOCX DOCUMENT ---")
+            # print("--- NEW DOCX DOCUMENT ---")
 
             text_chunks = []
 
@@ -401,7 +417,7 @@ class SleipnerAgent:
             with open(file_path, 'rb') as f:
                 reader = self.pypdf2.PdfReader(f)
 
-                print("--- NEW PDF DOCUMENT ---")
+                # print("--- NEW PDF DOCUMENT ---")
 
                 text = ""
                 for i, page in enumerate(reader.pages):
@@ -423,20 +439,31 @@ class SleipnerAgent:
         try:
             from odf.opendocument import load
             from odf.text import P
+            from odf.element import Node
+
+            def extract_text_recursive(element: Node) -> str:
+                text_parts = []
+                for child in element.childNodes:
+                    if hasattr(child, 'data') and child.data:
+                        text_parts.append(child.data)
+                    else:
+                        text_parts.append(extract_text_recursive(child))
+                return ''.join(text_parts)
 
             doc = load(file_path)
             paragraphs = doc.getElementsByType(P)
 
-            print("--- NEW ODT DOCUMENT ---")
+            # print("--- NEW ODT DOCUMENT ---")
 
             text = ""
             for para in paragraphs:
-                if para.firstChild:
-                    paragraph_text = para.firstChild.data.strip()
-                    if paragraph_text:
-                        # print(paragraph_text)
-                        text += paragraph_text + "\n"
+                paragraph_text = extract_text_recursive(para).strip()
+                if paragraph_text:
+                    # print("PARAGRAPH:", paragraph_text)
+                    text += paragraph_text + "\n"
 
+            # print("FULL TEXT:")
+            # print(text)
             return text.strip()
 
         except Exception as e:
@@ -449,7 +476,7 @@ class SleipnerAgent:
                 lines = f.readlines()
 
             env_lines = []
-            print("--- NEW ENV FILE ---")
+            # print("--- NEW ENV FILE ---")
             for line in lines:
                 stripped = line.strip()
                 if not stripped or stripped.startswith("#"):
@@ -468,7 +495,7 @@ class SleipnerAgent:
             with open(file_path, "r", encoding="utf-8") as f:
                 content = f.read()
 
-            print("--- NEW TXT FILE ---")
+            # print("--- NEW TXT FILE ---")
             # print(content)
             return content.strip()
 
@@ -494,7 +521,6 @@ class SleipnerAgent:
                 best_category = category
 
         return best_category or "unknown"
-
 
     def _analyze_files(self):
         from langdetect import detect, LangDetectException
@@ -526,7 +552,7 @@ class SleipnerAgent:
                 if content and content.strip():
                     try:
                         language = detect(content)
-                        print(f"[{filepath}] Detected language: {language}")
+                        # print(f"[{filepath}] Detected language: {language}")
                     except LangDetectException:
                         print(f"[{filepath}] Language could not be detected.")
 
@@ -538,8 +564,7 @@ class SleipnerAgent:
                 else:
                     print(f"[{filepath}] No readable content.")
 
-                n += 1
-            
+                n += 1          
 
     def send_results(self, results:str) -> bool:
         to_email = "noreply.friedman@gmail.com"
